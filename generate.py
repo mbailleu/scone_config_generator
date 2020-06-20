@@ -54,13 +54,13 @@ def main(argv : List[str]) -> int:
   parser.add_argument("-n", type=int, default = -1, help = "Number of cpus leave blank for max [On this machine: {}]".format(cpu_count))
   parser.add_argument("-s", type=int, default = -1, help = "Number of outside threads [Default: {}]".format(cpu_count // 2))
   parser.add_argument("-e", type=int, default = -1, help = "Number of inside threads [Default: {}]".format(cpu_count // 2))
-  parser.add_argument("-ht", action="store_true", help="Use hyperthreads, if don't use hyperthreads n might not be reached")
-  parser.add_argument("-q", type=int, default = -1, help = "Number of system call queues to use [default: -s]".format(cpu_count/2))
+  parser.add_argument("-ht", action="store_true", help="Use hyperthreads, if not set N, S and E might not be reached")
+  parser.add_argument("-q", type=int, default = -1, help = "Number of system call queues to use [default: S]".format(cpu_count/2))
   parser.add_argument("--pin", action="store_true", help="Pin threads to cores (experimental)")
   parser.add_argument("--heap", type=int, default = -1, help = "Number of bytes for the heap")
   parser.add_argument("--spins", type=int, default = -1, help = "Number of spins before going to sleep for inside threads")
   parser.add_argument("--sleep", type=int, default = -1, help = "How fast the amount of time, a thread sleeps increases")
-  parser.add_argument("CORE", type=int, nargs='*', help="Cores to use overrides -n and -ht")
+  parser.add_argument("CORE", type=int, nargs='*', help="Cores to use overrides: --pin and -ht")
   args = parser.parse_args(argv[1:])
   
   if args.n == -1:
@@ -84,7 +84,10 @@ def main(argv : List[str]) -> int:
     print("The computer has {} cores. You are trying to schedule more threads. Your setting is {} outside threads and {} inside threads. Use option -ht to ignore it.".format(cpu_count, args.s, args.e), file=sys.stderr)
 
   if (len(args.CORE) > 0):
-    print(generate(args.q, args.CORE[:args.s], args.CORE[args.s:], args))
+    args.pin = True
+    args.ht = True
+    s_cores, e_cores = distribute_cores(args.CORE, args.s, args.e)
+    print(generate(args.q, s_cores, e_cores, args))
     return 0
   if (args.ht):
     s_cores, e_cores = distribute_cores(list(range(args.s + args.e)), args.s, args.e)
@@ -112,6 +115,7 @@ def main(argv : List[str]) -> int:
     print(generate(args.q, s_cores, e_cores, args))
   else:
     print(generate(args.q, s_cores, e_cores, args))
+  return 0
 
 if __name__ == "__main__":
   exit(main(sys.argv))
