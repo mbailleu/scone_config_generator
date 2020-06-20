@@ -5,63 +5,113 @@ import argparse
 import sys
 import os
 import re
-from typing import List
+from typing import List, Tuple
 
 cpu_dir = "/sys/devices/system/cpu/"
 sibling = "topology/thread_siblings_list"
 topology = cpu_dir + "{}/"+ sibling
 
-def generate(queues, cores : List[int], pin : bool) -> str:
-  res = "Q {}".format(queues)
-  fmt = ""
-  if pin:
-      fmt = "\ne {0} {1} 0\ns {0} {1} 0"
-  else:
-      fmt = "\ne -1 {1} 0\ns -1 {1} 0"
-  for (i, c) in enumerate(cores):
-      res += fmt.format(i, i % queues)
+def add_threads(thread_type : str, queues : int, cores : List[int], pin : bool) -> str:
+  res = ""
+  fmt = "\n{0} {1} {2} 0"
+  for i, c in enumerate(cores):
+    res += fmt.format(thread_type, c if pin else -1, i % queues)
   return res
+
+def generate(queues : int, s_cores : List[int], e_cores : List[int], args) -> str:
+  if queues > len(s_cores):
+    print("You setting up more queues ({}) as you have outside threads ({}) working on them.".format(queues, len(s_cores)), file=sys.stderr)  
+
+  if queues > len(e_cores):
+    print("You setting up more queues ({}) as you have inside threads ({}) working on them.".format(queues, len(e_cores)), file=sys.stderr)  
+
+  res = "Q {}".format(queues)
+  if args.heap != -1:
+    res += "\nH {}".format(args.heap)
+  if args.spins != -1:
+    res += "\nP {}".format(args.spins)
+  if args.sleep != -1:
+    res += "\nL {}".format(args.sleep)
+  res += add_threads('s', queues, s_cores, args.pin)
+  res += add_threads('e', queues, e_cores, args.pin)
+  return res
+
+def distribute_cores(cores : List[int], s : int, e : int) -> Tuple[List[int],List[int]]:
+  cores.sort()
+  s_cores = cores[::2]
+  e_cores = cores[1::2]
+  e_cores += s_cores[s:]
+  s_cores += e_cores[e:]
+  s_cores = s_cores[:s]
+  e_cores = e_cores[:e]
+  e_cores.sort()
+  s_cores.sort()
+  return (s_cores, e_cores)
 
 def main(argv : List[str]) -> int:
   cpu_count = multiprocessing.cpu_count()
   parser = argparse.ArgumentParser(description='Generating sgx-musl.conf')
-  parser.add_argument("-n", type=int, default = cpu_count, help = "Number of cpus leave blank for max [On this machine: {}]".format(cpu_count))
+  parser.add_argument("-n", type=int, default = -1, help = "Number of cpus leave blank for max [On this machine: {}]".format(cpu_count))
+  parser.add_argument("-s", type=int, default = -1, help = "Number of outside threads [Default: {}]".format(cpu_count // 2))
+  parser.add_argument("-e", type=int, default = -1, help = "Number of inside threads [Default: {}]".format(cpu_count // 2))
   parser.add_argument("-ht", action="store_true", help="Use hyperthreads, if don't use hyperthreads n might not be reached")
-  parser.add_argument("-q", type=int, default = -1, help = "Number of system call queues to use [default: -n]".format(cpu_count))
-  parser.add_argument("-p", action="store_true", help="Pin threads to cores")
+  parser.add_argument("-q", type=int, default = -1, help = "Number of system call queues to use [default: -s]".format(cpu_count/2))
+  parser.add_argument("--pin", action="store_true", help="Pin threads to cores (experimental)")
+  parser.add_argument("--heap", type=int, default = -1, help = "Number of bytes for the heap")
+  parser.add_argument("--spins", type=int, default = -1, help = "Number of spins before going to sleep for inside threads")
+  parser.add_argument("--sleep", type=int, default = -1, help = "How fast the amount of time, a thread sleeps increases")
   parser.add_argument("CORE", type=int, nargs='*', help="Cores to use overrides -n and -ht")
   args = parser.parse_args(argv[1:])
   
+  if args.n == -1:
+    args.n = cpu_count
+
+  if args.s == -1:
+    if args.e != -1:
+      args.s = args.n - 1
+    else:
+      args.s = args.n // 2
+
+  if args.e == -1:
+    args.e = args.n - args.s
+
   set_q = False
   if (args.q == -1):
-      set_q = True
-      args.q = args.n
+    set_q = True
+    args.q = args.s
+
+  if (args.e + args.s) > cpu_count:
+    print("The computer has {} cores. You are trying to schedule more threads. Your setting is {} outside threads and {} inside threads. Use option -ht to ignore it.".format(cpu_count, args.s, args.e), file=sys.stderr)
 
   if (len(args.CORE) > 0):
-      print(generate(args.q, args.CORE, args.p))
-      return 0
+    print(generate(args.q, args.CORE[:args.s], args.CORE[args.s:], args))
+    return 0
   if (args.ht):
-      print(generate(args.q, range(args.n), args.p))
-      return 0
+    s_cores, e_cores = distribute_cores(list(range(args.s + args.e)), args.s, args.e)
+    print(generate(args.q, s_cores, e_cores, args))
+    return 0
 
   files = [topology.format(f) for f in os.listdir(cpu_dir) if re.match(r'cpu[0-9]+', f)]
   non_sibling = []
   for cpu in files:
-      with open(cpu, "r") as c:
-          val = c.read()
-          if not val in non_sibling:
-              non_sibling.append(val)
+    with open(cpu, "r") as c:
+      val = c.read()
+      if not val in non_sibling:
+        non_sibling.append(val)
 
   res = []
   for cpu in non_sibling:
-      res.append(int(cpu.split(',')[0]))
-  res.sort()
-  if len(res) <= args.n:
-      if (set_q):
-          args.q = len(res)
-      print(generate(args.q, res, args.p))
+    res.append(int(cpu.split(',')[0]))
+
+  s_cores, e_cores = distribute_cores(res, args.s, args.e)
+
+  if len(res) <= args.s + args.e:
+    if (set_q):
+      args.q = min(len(s_cores), len(e_cores))
+    #TODO correct args.s and args.e
+    print(generate(args.q, s_cores, e_cores, args))
   else:
-      print(generate(args.q, res[:args.n], args.p))
+    print(generate(args.q, s_cores, e_cores, args))
 
 if __name__ == "__main__":
   exit(main(sys.argv))
