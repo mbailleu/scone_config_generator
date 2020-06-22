@@ -11,12 +11,37 @@ cpu_dir = "/sys/devices/system/cpu/"
 sibling = "topology/thread_siblings_list"
 topology = cpu_dir + "{}/"+ sibling
 
+Units = {
+    "k"   : 10 ** 3,
+    "M"   : 10 ** 6,
+    "G"   : 10 ** 9,
+    "E"   : 10 ** 12,
+    "ki"  : 2 ** 10,
+    "Mi"  : 2 ** 20,
+    "Gi"  : 2 ** 30,
+    "kB"  : 2 ** 10,
+    "MB"  : 2 ** 20,
+    "GB"  : 2 ** 30,
+    "kiB" : 2 ** 10,
+    "MiB" : 2 ** 20,
+    "GiB" : 2 ** 30,
+}
+
 def add_threads(thread_type : str, queues : int, cores : List[int], pin : bool) -> str:
   res = ""
   fmt = "\n{0} {1} {2} 0"
   for i, c in enumerate(cores):
     res += fmt.format(thread_type, c if pin else -1, i % queues)
   return res
+
+def to_base_number(number : str) -> int:
+  match = re.search("\D+", number)
+  if match == None:
+    return int(number)
+  digits = number[:match.start()]
+  unit = number[match.start():]
+  print(digits, unit)
+  return int(digits) * Units.get(unit, 1)
 
 def generate(queues : int, s_cores : List[int], e_cores : List[int], args) -> str:
   if queues > len(s_cores):
@@ -26,12 +51,12 @@ def generate(queues : int, s_cores : List[int], e_cores : List[int], args) -> st
     print("You setting up more queues ({}) as you have inside threads ({}) working on them.".format(queues, len(e_cores)), file=sys.stderr)  
 
   res = "Q {}".format(queues)
-  if args.heap != -1:
-    res += "\nH {}".format(args.heap)
-  if args.spins != -1:
-    res += "\nP {}".format(args.spins)
-  if args.sleep != -1:
-    res += "\nL {}".format(args.sleep)
+  if args.heap != "":
+    res += "\nH {}".format(to_base_number(args.heap))
+  if args.spins != "":
+    res += "\nP {}".format(to_base_number(args.spins))
+  if args.sleep != "":
+    res += "\nL {}".format(to_base_number(args.sleep))
   res += add_threads('s', queues, s_cores, args.pin)
   res += add_threads('e', queues, e_cores, args.pin)
   return res
@@ -57,9 +82,9 @@ def main(argv : List[str]) -> int:
   parser.add_argument("-ht", action="store_true", help="Use hyperthreads, if not set N, S and E might not be reached")
   parser.add_argument("-q", type=int, default = -1, help = "Number of system call queues to use [default: S]".format(cpu_count/2))
   parser.add_argument("--pin", action="store_true", help="Pin threads to cores (experimental)")
-  parser.add_argument("--heap", type=int, default = -1, help = "Number of bytes for the heap")
-  parser.add_argument("--spins", type=int, default = -1, help = "Number of spins before going to sleep for inside threads")
-  parser.add_argument("--sleep", type=int, default = -1, help = "How fast the amount of time, a thread sleeps increases")
+  parser.add_argument("--heap", type=str, default = "", help = "Number of bytes for the heap support units (kiB, MiB, GiB)")
+  parser.add_argument("--spins", type=str, default = "", help = "Number of spins before going to sleep for inside threads (supports suffix k, M, G, E)")
+  parser.add_argument("--sleep", type=str, default = "", help = "How fast the amount of time, a thread sleeps increases (supports suffix k, M, G,E)")
   parser.add_argument("CORE", type=int, nargs='*', help="Cores to use overrides: --pin and -ht")
   args = parser.parse_args(argv[1:])
   
